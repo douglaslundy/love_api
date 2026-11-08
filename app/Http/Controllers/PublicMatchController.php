@@ -435,19 +435,36 @@ class PublicMatchController extends Controller
         $out = $rows->map(function ($r) use ($me) {
             $otherId = $this->otherSide($r, $me);
             $p = PublicProfile::where('user_id', $otherId)->first();
-            // Casal do outro lado: os dois aparecem, com nome, idade e fotos.
+            // Casal do outro lado: os dois aparecem, mas nome e fotos só depois da revelação.
             $people = collect($this->sideIds($otherId))->map(fn ($uid) => User::find($uid));
+            $revealed = $r->revealed_at !== null;
+            $principal = in_array($me, [$r->from_user_id, $r->to_user_id], true);
+            $iAsked = $r->reveal_status === 'pending' && in_array((int) $r->reveal_by, $this->visibleIds($me), true);
+            $coolingDown = $r->reveal_status === 'declined' && $r->reveal_at && now()->diffInHours($r->reveal_at, true) < 24;
 
             return [
                 'id' => $r->id,
-                'can_end' => in_array($me, [$r->from_user_id, $r->to_user_id], true),
-                'name' => $people->pluck('name')->join(' e '),
+                'can_end' => $principal,
+                'revealed' => $revealed,
+                'name' => $revealed ? $people->pluck('name')->join(' e ') : null,
                 'age' => $people->first()->birth_date?->age,
                 'partner_age' => $people->count() > 1 ? $people->last()->birth_date?->age : null,
                 'kind' => $people->count() > 1 ? 'casal' : 'pessoa',
                 'city' => $p?->city,
                 'bio' => $p?->bio,
-                'photos' => DB::table('profile_photos')->whereIn('user_id', $people->pluck('id'))->where('status', 'approved')->pluck('id')->values(),
+                'photos' => $revealed ? DB::table('profile_photos')->whereIn('user_id', $people->pluck('id'))->where('status', 'approved')->pluck('id')->values() : [],
+                'reveal' => [
+                    // pending_out: eu pedi e espero. pending_in: o outro lado pediu e eu decido.
+                    'status' => match (true) {
+                        $revealed => 'done',
+                        $r->reveal_status === 'pending' => $iAsked ? 'pending_out' : 'pending_in',
+                        $r->reveal_status === 'declined' => 'declined',
+                        default => 'none',
+                    },
+                    'note' => $r->reveal_status === 'declined' ? $r->reveal_note : null,
+                    'can_ask' => $principal && ! $revealed && $r->reveal_status !== 'pending' && ! $coolingDown,
+                    'can_respond' => $principal && $r->reveal_status === 'pending' && ! $iAsked,
+                ],
             ];
         })->values();
 
@@ -457,11 +474,18 @@ class PublicMatchController extends Controller
     public function messages(Request $request, int $id)
     {
         $me = $request->user()->id;
-        $this->acceptedFor($me, $id);
+        $r = $this->acceptedFor($me, $id);
         $names = User::pluck('name', 'id');
+        $mine = $this->visibleIds($me);
+        $revealed = $r->revealed_at !== null;
 
         return response()->json(['items' => DB::table('match_messages')->where('request_id', $id)->orderByDesc('id')->limit(100)->get()
-            ->reverse()->map(fn ($m) => ['id' => $m->id, 'text' => $m->body, 'mine' => $m->sender_id === $me, 'from' => $names[$m->sender_id] ?? '', 'at' => $m->created_at])->values()]);
+            ->reverse()->map(fn ($m) => [
+                'id' => $m->id, 'kind' => $m->kind, 'text' => $m->body, 'mine' => $m->sender_id === $me,
+                // Antes da revelação, quem é do outro lado aparece como "Anônimo".
+                'from' => $revealed || in_array($m->sender_id, $mine, true) ? ($names[$m->sender_id] ?? '') : 'Anônimo',
+                'at' => $m->created_at,
+            ])->values()]);
     }
 
     public function send(Request $request, int $id)
@@ -480,6 +504,57 @@ class PublicMatchController extends Controller
         }
 
         return response()->json(['ok' => true], 201);
+    }
+
+    private function principal(object $r, int $me): void
+    {
+        abort_unless(in_array($me, [$r->from_user_id, $r->to_user_id], true), 403, 'Só quem fez ou recebeu o pedido decide a revelação.');
+    }
+
+    private function systemMessage(int $requestId, int $sender, string $kind, string $body): void
+    {
+        DB::table('match_messages')->insert(['request_id' => $requestId, 'sender_id' => $sender, 'kind' => $kind, 'body' => $body, 'created_at' => now(), 'updated_at' => now()]);
+    }
+
+    /** Pede ao outro lado para os dois se revelarem (nome e fotos). Só vale com a aprovação dele. */
+    public function revealAsk(Request $request, int $id)
+    {
+        $me = $request->user()->id;
+        $r = $this->acceptedFor($me, $id);
+        $this->principal($r, $me);
+        abort_if($r->revealed_at !== null, 422, 'Vocês já se revelaram.');
+        abort_if($r->reveal_status === 'pending', 422, 'Já existe um pedido de revelação aguardando resposta.');
+        abort_if($r->reveal_status === 'declined' && $r->reveal_at && now()->diffInHours($r->reveal_at, true) < 24, 429, 'Espere um pouco antes de pedir de novo.');
+
+        DB::table('match_requests')->where('id', $id)->update(['reveal_status' => 'pending', 'reveal_by' => $me, 'reveal_note' => null, 'reveal_at' => now(), 'updated_at' => now()]);
+        $this->systemMessage($id, $me, 'reveal_ask', 'Quero que a gente se revele. Aceita mostrar nome e fotos dos dois?');
+        foreach ($this->sideIds($this->otherSide($r, $me)) as $uid) {
+            Notifier::nudge(User::find($uid));
+        }
+
+        return response()->json(['ok' => true], 201);
+    }
+
+    /** O outro lado aprova (revela nome e fotos dos dois) ou recusa, com justificativa opcional. */
+    public function revealRespond(Request $request, int $id)
+    {
+        $me = $request->user()->id;
+        $r = $this->acceptedFor($me, $id);
+        $this->principal($r, $me);
+        $data = $request->validate(['accept' => ['required', 'boolean'], 'note' => ['nullable', 'string', 'max:300']]);
+        abort_unless($r->reveal_status === 'pending' && ! in_array((int) $r->reveal_by, $this->visibleIds($me), true), 422, 'Não há pedido de revelação para você responder.');
+
+        if ($data['accept']) {
+            DB::table('match_requests')->where('id', $id)->update(['reveal_status' => 'done', 'revealed_at' => now(), 'reveal_at' => now(), 'updated_at' => now()]);
+            $this->systemMessage($id, $me, 'reveal_yes', 'Revelação aprovada. Agora vocês veem nome e fotos um do outro.');
+        } else {
+            $note = trim($data['note'] ?? '') ?: 'Ainda não.';
+            DB::table('match_requests')->where('id', $id)->update(['reveal_status' => 'declined', 'reveal_note' => $note, 'reveal_at' => now(), 'updated_at' => now()]);
+            $this->systemMessage($id, $me, 'reveal_no', $note);
+        }
+        Notifier::nudge(User::find($r->reveal_by));
+
+        return response()->json(['ok' => true]);
     }
 
     /**
@@ -600,7 +675,7 @@ class PublicMatchController extends Controller
         $mine = $this->visibleIds($me);
         $theirs = $this->visibleIds($photo->user_id);
         $allowed = $photo->user_id === $me
-            || ($photo->status === 'approved' && DB::table('match_requests')->where('status', 'accepted')
+            || ($photo->status === 'approved' && DB::table('match_requests')->where('status', 'accepted')->whereNotNull('revealed_at')
                 ->where(fn ($q) => $q->where(fn ($x) => $x->whereIn('from_user_id', $mine)->whereIn('to_user_id', $theirs))
                     ->orWhere(fn ($x) => $x->whereIn('from_user_id', $theirs)->whereIn('to_user_id', $mine)))->exists());
         abort_unless($allowed, 404);

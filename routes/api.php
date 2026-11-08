@@ -100,6 +100,8 @@ Route::middleware(['auth:sanctum', 'verified.if'])->group(function () {
         Route::get('/matches', [PublicMatchController::class, 'matches']);
         Route::get('/matches/{id}/messages', [PublicMatchController::class, 'messages'])->whereNumber('id');
         Route::post('/matches/{id}/messages', [PublicMatchController::class, 'send'])->whereNumber('id')->middleware('throttle:60,1');
+        Route::post('/matches/{id}/reveal', [PublicMatchController::class, 'revealAsk'])->whereNumber('id')->middleware('throttle:10,1');
+        Route::post('/matches/{id}/reveal/respond', [PublicMatchController::class, 'revealRespond'])->whereNumber('id');
         Route::post('/matches/{id}/unmatch', [PublicMatchController::class, 'unmatch'])->whereNumber('id');
         Route::post('/block', [PublicMatchController::class, 'blockUser']);
         Route::post('/report', [PublicMatchController::class, 'report'])->middleware('throttle:10,1');
