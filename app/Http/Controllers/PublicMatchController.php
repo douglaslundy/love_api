@@ -371,9 +371,14 @@ class PublicMatchController extends Controller
         $party = $this->visibleIds($me);
         $r = DB::table('match_requests')->where('id', $id)->where('status', 'accepted')
             ->where(fn ($q) => $q->whereIn('from_user_id', $party)->orWhereIn('to_user_id', $party))->first();
-        abort_unless($r, 404);
+        abort_unless($r && ! $this->exited($id, $me), 404);
 
         return $r;
+    }
+
+    private function exited(int $requestId, int $uid): bool
+    {
+        return DB::table('match_exits')->where('request_id', $requestId)->where('user_id', $uid)->exists();
     }
 
     /** O representante do outro lado (quem fez ou recebeu o pedido). */
@@ -388,7 +393,8 @@ class PublicMatchController extends Controller
         $party = $this->visibleIds($me);
         $rows = DB::table('match_requests')->where('status', 'accepted')
             ->where(fn ($q) => $q->whereIn('from_user_id', $party)->orWhereIn('to_user_id', $party))
-            ->orderByDesc('responded_at')->get();
+            ->orderByDesc('responded_at')->get()
+            ->reject(fn ($r) => $this->exited($r->id, $me));
 
         $out = $rows->map(function ($r) use ($me) {
             $otherId = $this->otherSide($r, $me);
@@ -398,6 +404,7 @@ class PublicMatchController extends Controller
 
             return [
                 'id' => $r->id,
+                'can_end' => in_array($me, [$r->from_user_id, $r->to_user_id], true),
                 'name' => $people->pluck('name')->join(' e '),
                 'age' => $people->first()->birth_date?->age,
                 'partner_age' => $people->count() > 1 ? $people->last()->birth_date?->age : null,
@@ -431,20 +438,30 @@ class PublicMatchController extends Controller
         // Avisa o outro lado inteiro, mais o par de quem escreveu quando é casal.
         $notify = array_merge($this->sideIds($this->otherSide($r, $me)), array_diff(array_merge($this->visibleIds($me), $this->sideIds($me)), [$me]));
         foreach ($notify as $uid) {
-            Notifier::nudge(User::find($uid));
+            if (! $this->exited($id, $uid)) {
+                Notifier::nudge(User::find($uid));
+            }
         }
 
         return response()->json(['ok' => true], 201);
     }
 
-    /** Desfazer o match: fecha o chat para todos. Com block=true, também bloqueia o outro lado. */
+    /**
+     * Sair do match. Quem fez ou recebeu o pedido (o representante) desfaz para todos.
+     * O par que só participa pelo casal sai sozinho: o match segue para os outros.
+     * Com block=true, bloqueia o outro lado só para quem pediu.
+     */
     public function unmatch(Request $request, int $id)
     {
         $me = $request->user()->id;
         $r = $this->acceptedFor($me, $id);
         $data = $request->validate(['block' => ['sometimes', 'boolean']]);
 
-        DB::table('match_requests')->where('id', $id)->update(['status' => 'cancelled', 'updated_at' => now()]);
+        if (in_array($me, [$r->from_user_id, $r->to_user_id], true)) {
+            DB::table('match_requests')->where('id', $id)->update(['status' => 'cancelled', 'updated_at' => now()]);
+        } else {
+            DB::table('match_exits')->insertOrIgnore(['request_id' => $id, 'user_id' => $me, 'created_at' => now()]);
+        }
         if ($data['block'] ?? false) {
             foreach ($this->sideIds($this->otherSide($r, $me)) as $uid) {
                 $this->block($me, $uid);
