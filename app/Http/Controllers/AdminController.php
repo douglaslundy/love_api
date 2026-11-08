@@ -195,8 +195,8 @@ class AdminController extends Controller
                 'with_id' => $r->from_user_id === $user->id ? $r->to_user_id : $r->from_user_id,
                 'status' => $r->status,
                 'messages' => DB::table('match_messages')->where('request_id', $r->id)->count(),
-                'chat' => DB::table('match_messages')->where('request_id', $r->id)->orderBy('id')->get(['sender_id', 'body', 'created_at'])
-                    ->map(fn ($m) => ['from' => $name($m->sender_id), 'text' => $m->body, 'at' => $m->created_at])->all(),
+                'chat' => DB::table('match_messages')->where('request_id', $r->id)->orderBy('id')->get(['sender_id', 'body', 'created_at', 'deleted_at'])
+                    ->map(fn ($m) => ['from' => $name($m->sender_id), 'text' => $m->body, 'at' => $m->created_at, 'deleted' => $m->deleted_at !== null])->all(),
                 'at' => $r->created_at,
             ]);
 

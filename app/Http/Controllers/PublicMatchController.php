@@ -481,7 +481,8 @@ class PublicMatchController extends Controller
 
         return response()->json(['items' => DB::table('match_messages')->where('request_id', $id)->orderByDesc('id')->limit(100)->get()
             ->reverse()->map(fn ($m) => [
-                'id' => $m->id, 'kind' => $m->kind, 'text' => $m->body, 'mine' => $m->sender_id === $me,
+                'id' => $m->id, 'kind' => $m->kind, 'deleted' => $m->deleted_at !== null,
+                'text' => $m->deleted_at !== null ? '' : $m->body, 'mine' => $m->sender_id === $me,
                 // Antes da revelação, quem é do outro lado aparece como "Anônimo".
                 'from' => $revealed || in_array($m->sender_id, $mine, true) ? ($names[$m->sender_id] ?? '') : 'Anônimo',
                 'at' => $m->created_at,
@@ -504,6 +505,19 @@ class PublicMatchController extends Controller
         }
 
         return response()->json(['ok' => true], 201);
+    }
+
+    /** Apaga (soft delete) uma mensagem minha. Some do chat dos dois lados; a linha fica no banco. */
+    public function deleteMessage(Request $request, int $id, int $messageId)
+    {
+        $me = $request->user()->id;
+        $this->acceptedFor($me, $id);
+        $m = DB::table('match_messages')->where('id', $messageId)->where('request_id', $id)
+            ->where('sender_id', $me)->where('kind', 'text')->whereNull('deleted_at')->first();
+        abort_unless($m, 404);
+        DB::table('match_messages')->where('id', $messageId)->update(['deleted_at' => now(), 'updated_at' => now()]);
+
+        return response()->noContent();
     }
 
     private function principal(object $r, int $me): void
