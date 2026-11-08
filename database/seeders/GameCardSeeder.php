@@ -56,7 +56,7 @@ class GameCardSeeder extends Seeder
                     }
                 }
 
-                GameCard::updateOrCreate(
+                GameCard::firstOrCreate(
                     ['game' => 'board', 'number' => (int) $m[1]],
                     ['level' => $m[4], 'text' => $text, 'extra' => $extra],
                 );
@@ -76,7 +76,7 @@ class GameCardSeeder extends Seeder
                 if (! in_array('Prefiro não responder', $options, true)) {
                     $options[] = 'Prefiro não responder';
                 }
-                GameCard::updateOrCreate(
+                GameCard::firstOrCreate(
                     ['game' => $game, 'number' => (int) $m[1]],
                     ['level' => $level, 'text' => $m[2], 'extra' => ['options' => $options]],
                 );
@@ -107,7 +107,7 @@ class GameCardSeeder extends Seeder
                 if (preg_match('/(\d+)\s*(segundos?|minutos?)/u', $m[4], $t)) {
                     $seconds = (int) $t[1] * (str_starts_with($t[2], 'minuto') ? 60 : 1);
                 }
-                GameCard::updateOrCreate(
+                GameCard::firstOrCreate(
                     ['game' => $game, 'number' => (int) $m[1] + $offset],
                     ['level' => $level, 'text' => $m[2], 'extra' => [
                         'action' => $m[2],
@@ -157,7 +157,7 @@ class GameCardSeeder extends Seeder
                     }
                 }
 
-                GameCard::updateOrCreate(
+                GameCard::firstOrCreate(
                     ['game' => "vod_{$kind}", 'number' => $number],
                     ['level' => $level, 'text' => $text, 'extra' => $extra],
                 );
@@ -190,7 +190,7 @@ class GameCardSeeder extends Seeder
             if (str_starts_with($line, '## ')) {
                 $level = $this->levelOf($line);
             } elseif ($level && preg_match('/^(\d+)\.\s+(.+\?)$/u', $line, $m)) {
-                GameCard::updateOrCreate(
+                GameCard::firstOrCreate(
                     ['game' => 'quem', 'number' => (int) $m[1]],
                     ['level' => $level, 'text' => $m[2]],
                 );
@@ -205,7 +205,7 @@ class GameCardSeeder extends Seeder
             if (str_starts_with($line, '## ')) {
                 $level = $this->levelOf($line);
             } elseif ($level && preg_match('/^\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|$/u', $line, $m)) {
-                GameCard::updateOrCreate(
+                GameCard::firstOrCreate(
                     ['game' => 'noite', 'number' => (int) $m[1]],
                     ['level' => $level, 'text' => $m[2], 'extra' => ['in_person' => $m[3], 'remote' => $m[4]]],
                 );

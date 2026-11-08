@@ -7,7 +7,7 @@ use Illuminate\Database\Seeder;
 
 class CatalogSeeder extends Seeder
 {
-    /** Lê as tabelas dos catálogos em docs/conteudo (fonte única). */
+    /** Só cria o que falta: nunca sobrescreve o que o admin editou. Lê as tabelas dos catálogos em docs/conteudo (fonte única). */
     public function run(): void
     {
         foreach (config('love.catalog_files') as $file) {
@@ -28,7 +28,7 @@ class CatalogSeeder extends Seeder
             } elseif (str_starts_with($line, '## ')) {
                 $category = null; // seções sem número (observações) não têm itens
             } elseif ($category && preg_match('/^\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*([LMI])\s*\|$/u', $line, $m)) {
-                CatalogItem::updateOrCreate(
+                CatalogItem::firstOrCreate(
                     ['number' => (int) $m[1]],
                     ['category' => $category, 'level' => $m[3], 'text' => $m[2], 'status' => 'approved'],
                 );
