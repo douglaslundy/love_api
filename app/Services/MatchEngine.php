@@ -40,6 +40,25 @@ class MatchEngine
         };
     }
 
+    /**
+     * Compatibilidade de perfil, de 0 a 100: encaixe de idade nas duas direções, proximidade
+     * e categorias publicadas em comum.
+     */
+    public static function profileScore($a, $b, ?int $km, array $catsA, array $catsB): int
+    {
+        $centered = function ($p, $age) {
+            $half = max(1, ($p->max_age - $p->min_age) / 2);
+
+            return max(0, 1 - abs($age - ($p->min_age + $p->max_age) / 2) / ($half + 1));
+        };
+        $age = ($centered($a, $b->user->birth_date->age) + $centered($b, $a->user->birth_date->age)) / 2;
+        $near = $km === null ? 0.5 : max(0, 1 - $km / max(1, min($a->max_km, $b->max_km)));
+        $union = count(array_unique(array_merge($catsA, $catsB)));
+        $cat = $union ? count(array_intersect($catsA, $catsB)) / $union : 0;
+
+        return (int) round(100 * (0.4 * $age + 0.3 * $near + 0.3 * $cat));
+    }
+
     /** @return int quantidade de pares gravados (nos dois sentidos) */
     public static function refresh(): int
     {
@@ -69,6 +88,11 @@ class MatchEngine
                 $items[$r->user_id][$r->id] = $r->category;
             });
 
+        $cats = [];
+        DB::table('public_categories')->whereIn('user_id', $ids)->get()->each(function ($r) use (&$cats) {
+            $cats[$r->user_id][] = $r->category;
+        });
+
         $couple = DB::table('couple_user')->whereIn('user_id', $ids)->pluck('couple_id', 'user_id');
         $blocked = [];
         DB::table('blocks')->whereIn('user_id', $ids)->get()->each(function ($b) use (&$blocked) {
@@ -89,7 +113,6 @@ class MatchEngine
             return $out;
         };
         $fits = fn (array $list, $p) => collect($list)->every(fn ($x) => $x >= $p->min_age && $x <= $p->max_age);
-        $min = (int) config('love.match_min_common');
         $written = 0;
 
         $list = $profiles->values();
@@ -109,14 +132,14 @@ class MatchEngine
                 $sa = $items[$ua] ?? [];
                 $sb = $items[$ub] ?? [];
                 $common = array_intersect_key($sa, $sb);
-                if (count($common) < $min || ! $sa || ! $sb) continue;
-
-                $score = (int) round(100 * count($common) / sqrt(count($sa) * count($sb)));
+                // Fantasias: 0 quando alguém não publicou nada. O filtro "só compatíveis" fica na consulta.
+                $score = $sa && $sb ? (int) round(100 * count($common) / sqrt(count($sa) * count($sb))) : 0;
                 $payload = ['items' => array_keys($common), 'categories' => array_count_values(array_values($common))];
+                $profileScore = self::profileScore($a, $b, $km, $cats[$ua] ?? [], $cats[$ub] ?? []);
 
                 foreach ([[$ua, $ub], [$ub, $ua]] as [$from, $to]) {
                     $row = DB::table('match_candidates')->where('user_id', $from)->where('candidate_id', $to)->first();
-                    $data = ['score' => min(100, $score), 'common' => json_encode($payload), 'distance_km' => $km, 'updated_at' => now()];
+                    $data = ['score' => min(100, $score), 'profile_score' => $profileScore, 'common_count' => count($common), 'common' => json_encode($payload), 'distance_km' => $km, 'updated_at' => now()];
                     $row
                         ? DB::table('match_candidates')->where('id', $row->id)->update($data)
                         : DB::table('match_candidates')->insert($data + ['public_id' => (string) Str::ulid(), 'user_id' => $from, 'candidate_id' => $to, 'created_at' => now()]);

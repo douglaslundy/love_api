@@ -50,6 +50,7 @@ class PublicMatchController extends Controller
             'categories.*' => ['string', 'in:'.implode(',', $cats)],
             'consent' => ['sometimes', 'boolean'],
             'as_couple' => ['sometimes', 'boolean'],
+            'show_photo' => ['sometimes', 'boolean'],
             'birth_date' => ['sometimes', 'date'],
         ]);
 
@@ -121,6 +122,7 @@ class PublicMatchController extends Controller
         return [
             'enabled' => (bool) $p?->enabled,
             'as_couple' => (bool) $p?->as_couple,
+            'show_photo' => (bool) $p?->show_photo,
             'couple_partner_ok' => (bool) $p?->couple_partner_ok,
             'can_couple' => (bool) $this->partnerOf($user),
             'visible' => $p?->visible ?? true,
@@ -162,6 +164,11 @@ class PublicMatchController extends Controller
             'distance' => MatchEngine::distanceLabel($c->distance_km),
             'bio' => $profile?->bio,
             'score' => $c->score,
+            'fantasy_score' => $c->score,
+            'profile_score' => $c->profile_score,
+            // Foto só quando a própria pessoa liga "mostrar foto" no perfil de parceiros.
+            'photo' => $profile?->show_photo && DB::table('profile_photos')->where('user_id', $c->candidate_id)->where('status', 'approved')->exists()
+                ? "/public/candidates/{$c->public_id}/photo" : null,
             'categories' => collect($common['categories'])->map(fn ($n, $name) => ['name' => $name, 'count' => $n])->values(),
             'sample' => $items,
         ];
@@ -173,8 +180,9 @@ class PublicMatchController extends Controller
         $req = DB::table('match_requests')->where('from_user_id', $me)->orWhere('to_user_id', $me)->get()
             ->map(fn ($r) => $r->from_user_id === $me ? $r->to_user_id : $r->from_user_id);
         $blk = DB::table('blocks')->where('user_id', $me)->pluck('blocked_id');
+        $passed = DB::table('match_passes')->where('user_id', $me)->pluck('candidate_id');
 
-        return $req->merge($blk)->unique()->values()->all();
+        return $req->merge($blk)->merge($passed)->unique()->values()->all();
     }
 
     public function suggestions(Request $request)
@@ -182,11 +190,39 @@ class PublicMatchController extends Controller
         $this->requireEnabled($request);
         $me = $request->user()->id;
 
+        // compat: só quem tem fantasias em comum. all: todos os perfis ativos que passam nos filtros.
+        $mode = $request->query('mode') === 'all' ? 'all' : 'compat';
         $rows = DB::table('match_candidates')->where('user_id', $me)
             ->whereNotIn('candidate_id', $this->inactiveIds($me))
-            ->orderByDesc('score')->limit(30)->get();
+            ->when($mode === 'compat', fn ($q) => $q->where('common_count', '>=', max(1, (int) config('love.match_min_common'))))
+            ->orderByRaw('(score + profile_score) desc')->limit(30)->get();
 
-        return response()->json(['items' => $rows->map(fn ($c) => $this->card($c))->values()]);
+        return response()->json(['mode' => $mode, 'items' => $rows->map(fn ($c) => $this->card($c))->values()]);
+    }
+
+    /** Deslizar para a esquerda: descarta o perfil, que não volta às sugestões. Nada é avisado. */
+    public function pass(Request $request)
+    {
+        $this->requireEnabled($request);
+        $me = $request->user()->id;
+        $data = $request->validate(['candidate' => ['required', 'string', 'size:26']]);
+        $cand = DB::table('match_candidates')->where('user_id', $me)->where('public_id', $data['candidate'])->first();
+        abort_unless($cand, 404, 'Perfil não encontrado.');
+        DB::table('match_passes')->insertOrIgnore(['user_id' => $me, 'candidate_id' => $cand->candidate_id]);
+
+        return response()->noContent();
+    }
+
+    /** Foto do cartão: só se o perfil liga "mostrar foto", e só para quem recebeu o cartão. */
+    public function candidatePhoto(Request $request, string $publicId)
+    {
+        $this->requireEnabled($request);
+        $cand = DB::table('match_candidates')->where('user_id', $request->user()->id)->where('public_id', $publicId)->first();
+        abort_unless($cand && PublicProfile::where('user_id', $cand->candidate_id)->where('enabled', true)->where('show_photo', true)->exists(), 404);
+        $photo = DB::table('profile_photos')->where('user_id', $cand->candidate_id)->where('status', 'approved')->orderBy('id')->first();
+        abort_unless($photo, 404);
+
+        return Storage::disk('local')->response($photo->path, null, ['Cache-Control' => 'private, max-age=300']);
     }
 
     /* ---------- pedidos ---------- */

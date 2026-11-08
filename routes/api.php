@@ -92,6 +92,8 @@ Route::middleware(['auth:sanctum', 'verified.if'])->group(function () {
         Route::post('/couple/consent', [PublicMatchController::class, 'coupleConsent']);
         Route::post('/couple/reviews/{id}', [PublicMatchController::class, 'coupleReview'])->whereNumber('id');
         Route::get('/suggestions',[PublicMatchController::class, 'suggestions']);
+        Route::post('/pass', [PublicMatchController::class, 'pass'])->middleware('throttle:120,1');
+        Route::get('/candidates/{publicId}/photo', [PublicMatchController::class, 'candidatePhoto'])->where('publicId', '[0-9A-Za-z]{26}');
         Route::post('/request', [PublicMatchController::class, 'request'])->middleware('throttle:30,1');
         Route::get('/requests', [PublicMatchController::class, 'requests']);
         Route::post('/requests/{id}/respond', [PublicMatchController::class, 'respond'])->whereNumber('id');
