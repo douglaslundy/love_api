@@ -13,6 +13,16 @@ class CatalogSeeder extends Seeder
         foreach (config('love.catalog_files') as $file) {
             $this->import($file);
         }
+
+        // Pares complementares (número => número do outro lado). Só preenche o que está vazio.
+        foreach ([522 => 523, 529 => 530, 531 => 532] as $a => $b) {
+            $ia = CatalogItem::where('number', $a)->first();
+            $ib = CatalogItem::where('number', $b)->first();
+            if ($ia && $ib) {
+                CatalogItem::whereKey($ia->id)->whereNull('counterpart_id')->update(['counterpart_id' => $ib->id]);
+                CatalogItem::whereKey($ib->id)->whereNull('counterpart_id')->update(['counterpart_id' => $ia->id]);
+            }
+        }
     }
 
     private function import(string $file): void

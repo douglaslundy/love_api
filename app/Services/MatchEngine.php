@@ -88,6 +88,10 @@ class MatchEngine
                 $items[$r->user_id][$r->id] = $r->category;
             });
 
+        // Itens em par: o Sim de um lado casa com o Sim do lado complementar.
+        $cp = DB::table('catalog_items')->whereNotNull('counterpart_id')->pluck('counterpart_id', 'id')->all();
+        $overlap = fn (array $mine, array $theirs) => array_filter($mine, fn ($cat, $id) => isset($theirs[$cp[$id] ?? $id]), ARRAY_FILTER_USE_BOTH);
+
         $cats = [];
         DB::table('public_categories')->whereIn('user_id', $ids)->get()->each(function ($r) use (&$cats) {
             $cats[$r->user_id][] = $r->category;
@@ -131,13 +135,14 @@ class MatchEngine
 
                 $sa = $items[$ua] ?? [];
                 $sb = $items[$ub] ?? [];
-                $common = array_intersect_key($sa, $sb);
+                $common = $overlap($sa, $sb);
+                $commonBack = $overlap($sb, $sa); // o mesmo total, visto do outro lado (mostra o lado de cada um)
                 // Fantasias: 0 quando alguém não publicou nada. O filtro "só compatíveis" fica na consulta.
                 $score = $sa && $sb ? (int) round(100 * count($common) / sqrt(count($sa) * count($sb))) : 0;
-                $payload = ['items' => array_keys($common), 'categories' => array_count_values(array_values($common))];
                 $profileScore = self::profileScore($a, $b, $km, $cats[$ua] ?? [], $cats[$ub] ?? []);
 
-                foreach ([[$ua, $ub], [$ub, $ua]] as [$from, $to]) {
+                foreach ([[$ua, $ub, $common], [$ub, $ua, $commonBack]] as [$from, $to, $mine]) {
+                    $payload = ['items' => array_keys($mine), 'categories' => array_count_values(array_values($mine))];
                     $row = DB::table('match_candidates')->where('user_id', $from)->where('candidate_id', $to)->first();
                     $data = ['score' => min(100, $score), 'profile_score' => $profileScore, 'common_count' => count($common), 'common' => json_encode($payload), 'distance_km' => $km, 'updated_at' => now()];
                     $row

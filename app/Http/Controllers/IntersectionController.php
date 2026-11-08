@@ -25,7 +25,8 @@ class IntersectionController extends Controller
 
         $rows = DB::table('catalog_items as c')
             ->join('answers as a', fn ($j) => $j->on('a.catalog_item_id', '=', 'c.id')->where('a.user_id', $user->id))
-            ->join('answers as b', fn ($j) => $j->on('b.catalog_item_id', '=', 'c.id')->where('b.user_id', $partnerId))
+            // Itens em par (counterpart_id): o par responde ao lado complementar. Cada um vê o lado que escolheu.
+            ->join('answers as b', fn ($j) => $j->on('b.catalog_item_id', '=', DB::raw('COALESCE(c.counterpart_id, c.id)'))->where('b.user_id', $partnerId))
             ->whereNotIn('c.category', Limits::blockedFor($user))
             ->whereIn('a.value', ['yes', 'maybe'])
             ->whereIn('b.value', ['yes', 'maybe'])
