@@ -14,8 +14,11 @@ class CatalogSeeder extends Seeder
             $this->import($file);
         }
 
+        // Grupo aberto: 529 e 530 dão match em qualquer combinação (quem escolheu um e quem escolheu o outro, ou o mesmo).
+        CatalogItem::whereIn('number', [529, 530])->whereNull('group_key')->update(['group_key' => 'conta-depois']);
+
         // Pares complementares (número => número do outro lado). Só preenche o que está vazio.
-        foreach ([522 => 523, 529 => 530, 531 => 532] as $a => $b) {
+        foreach ([522 => 523, 531 => 532] as $a => $b) {
             $ia = CatalogItem::where('number', $a)->first();
             $ib = CatalogItem::where('number', $b)->first();
             if ($ia && $ib) {

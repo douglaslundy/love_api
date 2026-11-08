@@ -23,10 +23,16 @@ class IntersectionController extends Controller
 
         $partnerId = $couple->users()->where('users.id', '!=', $user->id)->value('users.id');
 
+        // O par responde ao próprio item, ao lado complementar (counterpart_id) ou a qualquer item do mesmo grupo (group_key).
+        // Cada um vê o item que escolheu.
         $rows = DB::table('catalog_items as c')
             ->join('answers as a', fn ($j) => $j->on('a.catalog_item_id', '=', 'c.id')->where('a.user_id', $user->id))
-            // Itens em par (counterpart_id): o par responde ao lado complementar. Cada um vê o lado que escolheu.
-            ->join('answers as b', fn ($j) => $j->on('b.catalog_item_id', '=', DB::raw('COALESCE(c.counterpart_id, c.id)'))->where('b.user_id', $partnerId))
+            ->join('catalog_items as bc', fn ($j) => $j->where(fn ($w) => $w
+                ->whereColumn('bc.id', 'c.counterpart_id')
+                ->orWhere(fn ($x) => $x->whereNull('c.counterpart_id')->where(fn ($y) => $y
+                    ->whereColumn('bc.id', 'c.id')
+                    ->orWhere(fn ($g) => $g->whereNotNull('c.group_key')->whereColumn('bc.group_key', 'c.group_key'))))))
+            ->join('answers as b', fn ($j) => $j->on('b.catalog_item_id', '=', 'bc.id')->where('b.user_id', $partnerId))
             ->whereNotIn('c.category', Limits::blockedFor($user))
             ->whereIn('a.value', ['yes', 'maybe'])
             ->whereIn('b.value', ['yes', 'maybe'])
@@ -34,13 +40,14 @@ class IntersectionController extends Controller
             ->orderBy('c.number')
             ->get(['c.id', 'c.number', 'c.category', 'c.level', 'c.text', 'a.value as va', 'b.value as vb']);
 
-        $items = $rows->map(fn ($r) => [
-            'id' => $r->id,
-            'number' => $r->number,
-            'category' => $r->category,
-            'level' => $r->level,
-            'text' => $r->text,
-            'kind' => ($r->va === 'yes' && $r->vb === 'yes') ? 'match' : 'soft',
+        // Um item pode casar com dois do par (grupo): fica uma linha, "match" se algum casou com Sim dos dois.
+        $items = $rows->groupBy('id')->map(fn ($g) => [
+            'id' => $g[0]->id,
+            'number' => $g[0]->number,
+            'category' => $g[0]->category,
+            'level' => $g[0]->level,
+            'text' => $g[0]->text,
+            'kind' => $g->contains(fn ($r) => $r->va === 'yes' && $r->vb === 'yes') ? 'match' : 'soft',
         ])->values();
 
         return response()->json([

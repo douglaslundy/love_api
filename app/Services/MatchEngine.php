@@ -90,7 +90,18 @@ class MatchEngine
 
         // Itens em par: o Sim de um lado casa com o Sim do lado complementar.
         $cp = DB::table('catalog_items')->whereNotNull('counterpart_id')->pluck('counterpart_id', 'id')->all();
-        $overlap = fn (array $mine, array $theirs) => array_filter($mine, fn ($cat, $id) => isset($theirs[$cp[$id] ?? $id]), ARRAY_FILTER_USE_BOTH);
+        $grp = DB::table('catalog_items')->whereNotNull('group_key')->pluck('group_key', 'id')->all();
+        $overlap = function (array $mine, array $theirs) use ($cp, $grp) {
+            $theirGroups = array_flip(array_filter(array_map(fn ($id) => $grp[$id] ?? null, array_keys($theirs))));
+
+            return array_filter($mine, function ($cat, $id) use ($cp, $grp, $theirs, $theirGroups) {
+                if (isset($cp[$id])) {
+                    return isset($theirs[$cp[$id]]);
+                }
+
+                return isset($theirs[$id]) || (isset($grp[$id]) && isset($theirGroups[$grp[$id]]));
+            }, ARRAY_FILTER_USE_BOTH);
+        };
 
         $cats = [];
         DB::table('public_categories')->whereIn('user_id', $ids)->get()->each(function ($r) use (&$cats) {
